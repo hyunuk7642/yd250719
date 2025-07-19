@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # YouTube 썸네일 다운로더
 
 YouTube URL을 입력하면 썸네일을 다운로드하는 GUI 프로그램입니다.
