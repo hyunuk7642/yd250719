@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-YouTube Thumbnail Downloader GUI
-Windows와 macOS에서 모두 동작하는 YouTube 썸네일 다운로더
+YouTube Video Info & Thumbnail Downloader GUI
+Windows와 macOS에서 모두 동작하는 YouTube 비디오 정보 확인 및 썸네일 다운로더
 """
 
 import sys
@@ -12,15 +12,63 @@ import requests
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 import platform
+import qrcode
+from io import BytesIO
 
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                             QWidget, QLabel, QLineEdit, QPushButton, QTextEdit, 
                             QFileDialog, QMessageBox, QProgressBar, QComboBox,
-                            QGroupBox, QGridLayout)
+                            QGroupBox, QGridLayout, QScrollArea, QTabWidget)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QPixmap, QFont, QIcon
 from PIL import Image
 import yt_dlp
+
+
+class VideoInfoExtractor(QThread):
+    """비디오 정보 추출을 위한 워커 스레드"""
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(bool, dict)
+    
+    def __init__(self, url):
+        super().__init__()
+        self.url = url
+    
+    def run(self):
+        try:
+            self.progress.emit("YouTube 비디오 정보를 가져오는 중...")
+            
+            # yt-dlp를 사용하여 비디오 정보 가져오기
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+                'writecomments': True,
+                'getcomments': True,
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(self.url, download=False)
+                
+                # 필요한 정보 추출
+                video_data = {
+                    'title': info.get('title', 'Unknown'),
+                    'view_count': info.get('view_count', 0),
+                    'like_count': info.get('like_count', 0),
+                    'duration': info.get('duration', 0),
+                    'upload_date': info.get('upload_date', 'Unknown'),
+                    'uploader': info.get('uploader', 'Unknown'),
+                    'description': info.get('description', ''),
+                    'thumbnails': info.get('thumbnails', []),
+                    'comments': info.get('comments', []),
+                    'url': self.url
+                }
+                
+                self.progress.emit("비디오 정보 추출 완료!")
+                self.finished.emit(True, video_data)
+                
+        except Exception as e:
+            self.finished.emit(False, {'error': str(e)})
 
 
 class ThumbnailDownloader(QThread):
@@ -139,12 +187,14 @@ class ThumbnailDownloader(QThread):
 
 
 class YouTubeThumbnailGUI(QMainWindow):
-    """YouTube 썸네일 다운로더 메인 GUI"""
+    """YouTube 비디오 정보 확인 및 썸네일 다운로더 메인 GUI"""
     
     def __init__(self):
         super().__init__()
         self.init_ui()
         self.downloader = None
+        self.info_extractor = None
+        self.video_data = None
         
         # 기본 저장 경로 설정 (OS별)
         if platform.system() == "Windows":
@@ -157,8 +207,8 @@ class YouTubeThumbnailGUI(QMainWindow):
     
     def init_ui(self):
         """UI 초기화"""
-        self.setWindowTitle("YouTube 썸네일 다운로더")
-        self.setGeometry(100, 100, 600, 500)
+        self.setWindowTitle("YouTube 비디오 정보 & 썸네일 다운로더")
+        self.setGeometry(100, 100, 800, 700)
         
         # 중앙 위젯 설정
         central_widget = QWidget()
@@ -168,7 +218,7 @@ class YouTubeThumbnailGUI(QMainWindow):
         layout = QVBoxLayout(central_widget)
         
         # 제목
-        title_label = QLabel("YouTube 썸네일 다운로더")
+        title_label = QLabel("YouTube 비디오 정보 & 썸네일 다운로더")
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
@@ -185,7 +235,98 @@ class YouTubeThumbnailGUI(QMainWindow):
         self.url_input.setPlaceholderText("YouTube URL을 입력하세요 (예: https://www.youtube.com/watch?v=...)")
         url_layout.addWidget(self.url_input)
         
+        # 버튼 레이아웃
+        button_layout = QHBoxLayout()
+        
+        # 정보 가져오기 버튼
+        self.info_button = QPushButton("비디오 정보 가져오기")
+        self.info_button.clicked.connect(self.get_video_info)
+        button_layout.addWidget(self.info_button)
+        
+        # QR 코드 생성 버튼
+        self.qr_button = QPushButton("QR 코드 생성")
+        self.qr_button.clicked.connect(self.generate_qr_code)
+        self.qr_button.setEnabled(False)
+        button_layout.addWidget(self.qr_button)
+        
+        url_layout.addLayout(button_layout)
         layout.addWidget(url_group)
+        
+        # 탭 위젯 생성
+        self.tab_widget = QTabWidget()
+        
+        # 비디오 정보 탭
+        self.info_tab = self.create_info_tab()
+        self.tab_widget.addTab(self.info_tab, "비디오 정보")
+        
+        # 댓글 탭
+        self.comments_tab = self.create_comments_tab()
+        self.tab_widget.addTab(self.comments_tab, "댓글")
+        
+        # 썸네일 다운로드 탭
+        self.download_tab = self.create_download_tab()
+        self.tab_widget.addTab(self.download_tab, "썸네일 다운로드")
+        
+        layout.addWidget(self.tab_widget)
+        
+        # 진행 상황 표시
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+        
+        # 로그 출력
+        log_group = QGroupBox("로그")
+        log_layout = QVBoxLayout(log_group)
+        
+        self.log_text = QTextEdit()
+        self.log_text.setMaximumHeight(100)
+        self.log_text.setReadOnly(True)
+        log_layout.addWidget(self.log_text)
+        
+        layout.addWidget(log_group)
+        
+        # 초기 로그 메시지
+        self.add_log("프로그램이 시작되었습니다.")
+        self.add_log(f"현재 OS: {platform.system()}")
+    
+    def create_info_tab(self):
+        """비디오 정보 탭 생성"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # 비디오 정보 표시 영역
+        info_scroll = QScrollArea()
+        info_widget = QWidget()
+        self.info_layout = QVBoxLayout(info_widget)
+        
+        # 기본 메시지
+        self.info_label = QLabel("URL을 입력하고 '비디오 정보 가져오기' 버튼을 클릭하세요.")
+        self.info_label.setAlignment(Qt.AlignCenter)
+        self.info_layout.addWidget(self.info_label)
+        
+        info_scroll.setWidget(info_widget)
+        info_scroll.setWidgetResizable(True)
+        layout.addWidget(info_scroll)
+        
+        return tab
+    
+    def create_comments_tab(self):
+        """댓글 탭 생성"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # 댓글 표시 영역
+        self.comments_text = QTextEdit()
+        self.comments_text.setReadOnly(True)
+        self.comments_text.setPlainText("비디오 정보를 먼저 가져와주세요.")
+        layout.addWidget(self.comments_text)
+        
+        return tab
+    
+    def create_download_tab(self):
+        """썸네일 다운로드 탭 생성"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
         
         # 설정 그룹
         settings_group = QGroupBox("다운로드 설정")
@@ -228,25 +369,183 @@ class YouTubeThumbnailGUI(QMainWindow):
         self.download_button.setMinimumHeight(40)
         layout.addWidget(self.download_button)
         
-        # 진행 상황 표시
-        self.progress_bar = QProgressBar()
+        return tab
+    
+    def get_video_info(self):
+        """비디오 정보 가져오기"""
+        url = self.url_input.text().strip()
+        
+        if not url:
+            QMessageBox.warning(self, "경고", "YouTube URL을 입력해주세요.")
+            return
+        
+        if not self.validate_youtube_url(url):
+            QMessageBox.warning(self, "경고", "올바른 YouTube URL을 입력해주세요.")
+            return
+        
+        # UI 상태 변경
+        self.info_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # 무한 진행바
+        
+        self.add_log(f"비디오 정보 가져오기 시작: {url}")
+        
+        # 정보 추출 스레드 시작
+        self.info_extractor = VideoInfoExtractor(url)
+        self.info_extractor.progress.connect(self.update_progress)
+        self.info_extractor.finished.connect(self.info_extraction_finished)
+        self.info_extractor.start()
+    
+    def info_extraction_finished(self, success, data):
+        """정보 추출 완료 처리"""
+        # UI 상태 복원
+        self.info_button.setEnabled(True)
         self.progress_bar.setVisible(False)
-        layout.addWidget(self.progress_bar)
         
-        # 로그 출력
-        log_group = QGroupBox("로그")
-        log_layout = QVBoxLayout(log_group)
+        if success:
+            self.video_data = data
+            self.qr_button.setEnabled(True)
+            self.display_video_info(data)
+            self.display_comments(data.get('comments', []))
+            self.add_log("비디오 정보 가져오기 완료!")
+        else:
+            QMessageBox.critical(self, "오류", f"정보 가져오기 실패: {data.get('error', '알 수 없는 오류')}")
+            self.add_log(f"오류: {data.get('error', '알 수 없는 오류')}")
+    
+    def display_video_info(self, data):
+        """비디오 정보 표시"""
+        # 기존 위젯들 제거
+        for i in reversed(range(self.info_layout.count())): 
+            self.info_layout.itemAt(i).widget().setParent(None)
         
-        self.log_text = QTextEdit()
-        self.log_text.setMaximumHeight(150)
-        self.log_text.setReadOnly(True)
-        log_layout.addWidget(self.log_text)
+        # 비디오 제목
+        title_label = QLabel(f"제목: {data['title']}")
+        title_font = QFont()
+        title_font.setBold(True)
+        title_font.setPointSize(12)
+        title_label.setFont(title_font)
+        title_label.setWordWrap(True)
+        self.info_layout.addWidget(title_label)
         
-        layout.addWidget(log_group)
+        # 채널명
+        uploader_label = QLabel(f"채널: {data['uploader']}")
+        self.info_layout.addWidget(uploader_label)
         
-        # 초기 로그 메시지
-        self.add_log("프로그램이 시작되었습니다.")
-        self.add_log(f"현재 OS: {platform.system()}")
+        # 조회수
+        view_count = data['view_count']
+        view_text = f"조회수: {view_count:,}회" if view_count else "조회수: 정보 없음"
+        view_label = QLabel(view_text)
+        self.info_layout.addWidget(view_label)
+        
+        # 좋아요 수
+        like_count = data['like_count']
+        like_text = f"좋아요: {like_count:,}개" if like_count else "좋아요: 정보 없음"
+        like_label = QLabel(like_text)
+        like_font = QFont()
+        like_font.setBold(True)
+        like_label.setFont(like_font)
+        like_label.setStyleSheet("color: #ff0000;")
+        self.info_layout.addWidget(like_label)
+        
+        # 업로드 날짜
+        upload_date = data['upload_date']
+        if upload_date and upload_date != 'Unknown':
+            # YYYYMMDD 형식을 YYYY-MM-DD로 변환
+            try:
+                formatted_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+                date_label = QLabel(f"업로드 날짜: {formatted_date}")
+            except:
+                date_label = QLabel(f"업로드 날짜: {upload_date}")
+        else:
+            date_label = QLabel("업로드 날짜: 정보 없음")
+        self.info_layout.addWidget(date_label)
+        
+        # 영상 길이
+        duration = data['duration']
+        if duration:
+            minutes = duration // 60
+            seconds = duration % 60
+            duration_text = f"길이: {minutes}분 {seconds}초"
+        else:
+            duration_text = "길이: 정보 없음"
+        duration_label = QLabel(duration_text)
+        self.info_layout.addWidget(duration_label)
+        
+        # 설명 (처음 200자만)
+        description = data['description']
+        if description:
+            short_desc = description[:200] + "..." if len(description) > 200 else description
+            desc_label = QLabel(f"설명:\n{short_desc}")
+            desc_label.setWordWrap(True)
+            desc_label.setMaximumHeight(100)
+            self.info_layout.addWidget(desc_label)
+        
+        self.info_layout.addStretch()
+    
+    def display_comments(self, comments):
+        """댓글 표시"""
+        if not comments:
+            self.comments_text.setPlainText("댓글 정보를 가져올 수 없습니다.")
+            return
+        
+        comment_text = f"총 댓글 수: {len(comments)}개\n\n"
+        
+        # 최대 50개 댓글만 표시
+        for i, comment in enumerate(comments[:50]):
+            author = comment.get('author', '익명')
+            text = comment.get('text', '')
+            like_count = comment.get('like_count', 0)
+            
+            comment_text += f"[{i+1}] {author}\n"
+            comment_text += f"{text}\n"
+            if like_count > 0:
+                comment_text += f"👍 {like_count}\n"
+            comment_text += "-" * 50 + "\n\n"
+        
+        if len(comments) > 50:
+            comment_text += f"\n... 그리고 {len(comments) - 50}개의 댓글이 더 있습니다."
+        
+        self.comments_text.setPlainText(comment_text)
+    
+    def generate_qr_code(self):
+        """QR 코드 생성"""
+        if not self.video_data:
+            QMessageBox.warning(self, "경고", "먼저 비디오 정보를 가져와주세요.")
+            return
+        
+        try:
+            # QR 코드 생성
+            url = self.video_data['url']
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(url)
+            qr.make(fit=True)
+            
+            # QR 코드 이미지 생성
+            qr_img = qr.make_image(fill_color="black", back_color="white")
+            
+            # 파일 저장 대화상자
+            safe_title = re.sub(r'[<>:"/\\|?*]', '_', self.video_data['title'])
+            default_filename = f"{safe_title}_QR.png"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, 
+                "QR 코드 저장", 
+                os.path.join(self.save_path, default_filename),
+                "PNG files (*.png);;All Files (*)"
+            )
+            
+            if file_path:
+                qr_img.save(file_path)
+                QMessageBox.information(self, "성공", f"QR 코드가 저장되었습니다:\n{file_path}")
+                self.add_log(f"QR 코드 생성 완료: {file_path}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"QR 코드 생성 실패: {str(e)}")
+            self.add_log(f"QR 코드 생성 오류: {str(e)}")
     
     def browse_save_path(self):
         """저장 경로 선택"""
@@ -270,14 +569,8 @@ class YouTubeThumbnailGUI(QMainWindow):
     
     def download_thumbnail(self):
         """썸네일 다운로드 시작"""
-        url = self.url_input.text().strip()
-        
-        if not url:
-            QMessageBox.warning(self, "경고", "YouTube URL을 입력해주세요.")
-            return
-        
-        if not self.validate_youtube_url(url):
-            QMessageBox.warning(self, "경고", "올바른 YouTube URL을 입력해주세요.")
+        if not self.video_data:
+            QMessageBox.warning(self, "경고", "먼저 비디오 정보를 가져와주세요.")
             return
         
         if not os.path.exists(self.save_path):
@@ -296,11 +589,11 @@ class YouTubeThumbnailGUI(QMainWindow):
         else:
             quality = quality_data
         
-        self.add_log(f"다운로드 시작: {url}")
+        self.add_log(f"썸네일 다운로드 시작")
         self.add_log(f"품질: {self.quality_combo.currentText()}")
         
         # 다운로더 스레드 시작
-        self.downloader = ThumbnailDownloader(url, self.save_path, quality)
+        self.downloader = ThumbnailDownloader(self.video_data['url'], self.save_path, quality)
         self.downloader.progress.connect(self.update_progress)
         self.downloader.finished.connect(self.download_finished)
         self.downloader.start()
@@ -338,9 +631,9 @@ def main():
     app = QApplication(sys.argv)
     
     # 애플리케이션 정보 설정
-    app.setApplicationName("YouTube Thumbnail Downloader")
-    app.setApplicationVersion("1.0")
-    app.setOrganizationName("YT Thumbnail Tool")
+    app.setApplicationName("YouTube Video Info & Thumbnail Downloader")
+    app.setApplicationVersion("2.0")
+    app.setOrganizationName("YT Video Info Tool")
     
     # 메인 윈도우 생성 및 실행
     window = YouTubeThumbnailGUI()
