@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-YouTube Video Info & Thumbnail Downloader GUI
-Windows와 macOS에서 모두 동작하는 YouTube 비디오 정보 확인 및 썸네일 다운로더
+YouTube Video Info & Download Tool
+Windows와 macOS에서 모두 동작하는 YouTube 비디오 정보 확인, 썸네일 및 비디오 다운로더
 """
 
 import sys
@@ -186,13 +186,99 @@ class ThumbnailDownloader(QThread):
         return sorted_thumbnails[0]['url'] if sorted_thumbnails else None
 
 
+class VideoDownloader(QThread):
+    """비디오 다운로드를 위한 워커 스레드"""
+    progress = pyqtSignal(str)
+    progress_percent = pyqtSignal(int)
+    finished = pyqtSignal(bool, str)
+    
+    def __init__(self, url, save_path, quality, format_type):
+        super().__init__()
+        self.url = url
+        self.save_path = save_path
+        self.quality = quality
+        self.format_type = format_type
+    
+    def run(self):
+        try:
+            self.progress.emit("비디오 다운로드를 시작합니다...")
+            
+            def progress_hook(d):
+                if d['status'] == 'downloading':
+                    if 'total_bytes' in d and d['total_bytes']:
+                        percent = int((d['downloaded_bytes'] / d['total_bytes']) * 100)
+                        self.progress_percent.emit(percent)
+                        self.progress.emit(f"다운로드 중... {percent}%")
+                    elif '_percent_str' in d:
+                        percent_str = d['_percent_str'].strip('%')
+                        try:
+                            percent = int(float(percent_str))
+                            self.progress_percent.emit(percent)
+                            self.progress.emit(f"다운로드 중... {percent}%")
+                        except:
+                            self.progress.emit("다운로드 중...")
+                elif d['status'] == 'finished':
+                    self.progress.emit("다운로드 완료, 후처리 중...")
+                    self.progress_percent.emit(100)
+            
+            # yt-dlp 옵션 설정
+            ydl_opts = {
+                'outtmpl': os.path.join(self.save_path, '%(title)s.%(ext)s'),
+                'progress_hooks': [progress_hook],
+                'quiet': False,
+                'no_warnings': False,
+            }
+            
+            # 품질 설정
+            if self.quality == 'best':
+                if self.format_type == 'video':
+                    ydl_opts['format'] = 'best[ext=mp4]/best'
+                else:  # audio
+                    ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio'
+                    ydl_opts['postprocessors'] = [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }]
+            elif self.quality == 'worst':
+                if self.format_type == 'video':
+                    ydl_opts['format'] = 'worst[ext=mp4]/worst'
+                else:  # audio
+                    ydl_opts['format'] = 'worstaudio[ext=m4a]/worstaudio'
+                    ydl_opts['postprocessors'] = [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '128',
+                    }]
+            else:  # 특정 해상도
+                if self.format_type == 'video':
+                    ydl_opts['format'] = f'best[height<={self.quality}][ext=mp4]/best[height<={self.quality}]'
+                else:  # audio
+                    ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio'
+                    ydl_opts['postprocessors'] = [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }]
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([self.url])
+            
+            self.progress.emit("다운로드가 완료되었습니다!")
+            self.finished.emit(True, f"비디오가 성공적으로 다운로드되었습니다!\n저장 위치: {self.save_path}")
+            
+        except Exception as e:
+            self.finished.emit(False, f"다운로드 실패: {str(e)}")
+
+
 class YouTubeThumbnailGUI(QMainWindow):
-    """YouTube 비디오 정보 확인 및 썸네일 다운로더 메인 GUI"""
+    """YouTube 비디오 정보 확인, 썸네일 및 비디오 다운로더 메인 GUI"""
     
     def __init__(self):
         super().__init__()
         self.init_ui()
         self.downloader = None
+        self.video_downloader = None
         self.info_extractor = None
         self.video_data = None
         
@@ -203,11 +289,13 @@ class YouTubeThumbnailGUI(QMainWindow):
             self.default_save_path = os.path.join(os.path.expanduser("~"), "Desktop")
         
         self.save_path = self.default_save_path
+        self.video_save_path = self.default_save_path
         self.path_label.setText(f"저장 경로: {self.save_path}")
+        self.video_path_label.setText(f"저장 경로: {self.video_save_path}")
     
     def init_ui(self):
         """UI 초기화"""
-        self.setWindowTitle("YouTube 비디오 정보 & 썸네일 다운로더")
+        self.setWindowTitle("YouTube 비디오 정보 & 다운로더")
         self.setGeometry(100, 100, 800, 700)
         
         # 중앙 위젯 설정
@@ -218,7 +306,7 @@ class YouTubeThumbnailGUI(QMainWindow):
         layout = QVBoxLayout(central_widget)
         
         # 제목
-        title_label = QLabel("YouTube 비디오 정보 & 썸네일 다운로더")
+        title_label = QLabel("YouTube 비디오 정보 & 다운로더")
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
@@ -266,6 +354,10 @@ class YouTubeThumbnailGUI(QMainWindow):
         # 썸네일 다운로드 탭
         self.download_tab = self.create_download_tab()
         self.tab_widget.addTab(self.download_tab, "썸네일 다운로드")
+        
+        # 비디오 다운로드 탭
+        self.video_download_tab = self.create_video_download_tab()
+        self.tab_widget.addTab(self.video_download_tab, "비디오 다운로드")
         
         layout.addWidget(self.tab_widget)
         
@@ -368,6 +460,73 @@ class YouTubeThumbnailGUI(QMainWindow):
         self.download_button.clicked.connect(self.download_thumbnail)
         self.download_button.setMinimumHeight(40)
         layout.addWidget(self.download_button)
+        
+        return tab
+    
+    def create_video_download_tab(self):
+        """비디오 다운로드 탭 생성"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # 설정 그룹
+        settings_group = QGroupBox("비디오 다운로드 설정")
+        settings_layout = QGridLayout(settings_group)
+        
+        # 다운로드 타입 선택
+        type_label = QLabel("다운로드 타입:")
+        self.video_type_combo = QComboBox()
+        self.video_type_combo.addItem("비디오 (MP4)", "video")
+        self.video_type_combo.addItem("오디오만 (MP3)", "audio")
+        settings_layout.addWidget(type_label, 0, 0)
+        settings_layout.addWidget(self.video_type_combo, 0, 1)
+        
+        # 품질 선택
+        video_quality_label = QLabel("비디오 품질:")
+        self.video_quality_combo = QComboBox()
+        
+        # 품질 옵션 추가
+        video_quality_options = [
+            ("최고 품질", "best"),
+            ("1080p", "1080"),
+            ("720p", "720"),
+            ("480p", "480"),
+            ("360p", "360"),
+            ("최저 품질", "worst")
+        ]
+        
+        for text, data in video_quality_options:
+            self.video_quality_combo.addItem(text, data)
+        
+        settings_layout.addWidget(video_quality_label, 1, 0)
+        settings_layout.addWidget(self.video_quality_combo, 1, 1)
+        
+        # 저장 경로 (썸네일과 동일한 경로 사용)
+        video_path_label = QLabel("저장 경로:")
+        self.video_path_label = QLabel()
+        self.video_browse_button = QPushButton("찾아보기")
+        self.video_browse_button.clicked.connect(self.browse_video_save_path)
+        
+        settings_layout.addWidget(video_path_label, 2, 0)
+        settings_layout.addWidget(self.video_path_label, 2, 1)
+        settings_layout.addWidget(self.video_browse_button, 2, 2)
+        
+        layout.addWidget(settings_group)
+        
+        # 다운로드 진행률
+        progress_group = QGroupBox("다운로드 진행률")
+        progress_layout = QVBoxLayout(progress_group)
+        
+        self.video_progress_bar = QProgressBar()
+        self.video_progress_bar.setVisible(False)
+        progress_layout.addWidget(self.video_progress_bar)
+        
+        layout.addWidget(progress_group)
+        
+        # 다운로드 버튼
+        self.video_download_button = QPushButton("비디오 다운로드")
+        self.video_download_button.clicked.connect(self.download_video)
+        self.video_download_button.setMinimumHeight(40)
+        layout.addWidget(self.video_download_button)
         
         return tab
     
@@ -555,6 +714,76 @@ class YouTubeThumbnailGUI(QMainWindow):
             self.path_label.setText(f"저장 경로: {self.save_path}")
             self.add_log(f"저장 경로 변경: {self.save_path}")
     
+    def browse_video_save_path(self):
+        """비디오 저장 경로 선택"""
+        folder = QFileDialog.getExistingDirectory(self, "비디오 저장 경로 선택", self.video_save_path)
+        if folder:
+            self.video_save_path = folder
+            self.video_path_label.setText(f"저장 경로: {self.video_save_path}")
+            self.add_log(f"비디오 저장 경로 변경: {self.video_save_path}")
+    
+    def download_video(self):
+        """비디오 다운로드 시작"""
+        if not self.video_data:
+            QMessageBox.warning(self, "경고", "먼저 비디오 정보를 가져와주세요.")
+            return
+        
+        if not os.path.exists(self.video_save_path):
+            QMessageBox.warning(self, "경고", "저장 경로가 존재하지 않습니다.")
+            return
+        
+        # UI 상태 변경
+        self.video_download_button.setEnabled(False)
+        self.video_progress_bar.setVisible(True)
+        self.video_progress_bar.setValue(0)
+        
+        # 선택된 품질과 타입 가져오기
+        quality_data = self.video_quality_combo.currentData()
+        type_data = self.video_type_combo.currentData()
+        
+        if quality_data is None:
+            quality = "best"
+        else:
+            quality = quality_data
+            
+        if type_data is None:
+            format_type = "video"
+        else:
+            format_type = type_data
+        
+        self.add_log(f"비디오 다운로드 시작")
+        self.add_log(f"타입: {self.video_type_combo.currentText()}")
+        self.add_log(f"품질: {self.video_quality_combo.currentText()}")
+        
+        # 다운로더 스레드 시작
+        self.video_downloader = VideoDownloader(
+            self.video_data['url'], 
+            self.video_save_path, 
+            quality, 
+            format_type
+        )
+        self.video_downloader.progress.connect(self.update_progress)
+        self.video_downloader.progress_percent.connect(self.update_video_progress)
+        self.video_downloader.finished.connect(self.video_download_finished)
+        self.video_downloader.start()
+    
+    def update_video_progress(self, percent):
+        """비디오 다운로드 진행률 업데이트"""
+        self.video_progress_bar.setValue(percent)
+    
+    def video_download_finished(self, success, message):
+        """비디오 다운로드 완료 처리"""
+        # UI 상태 복원
+        self.video_download_button.setEnabled(True)
+        self.video_progress_bar.setVisible(False)
+        
+        if success:
+            QMessageBox.information(self, "성공", message)
+            self.add_log("비디오 다운로드 완료!")
+        else:
+            QMessageBox.critical(self, "오류", message)
+            self.add_log(f"오류: {message}")
+    
     def validate_youtube_url(self, url):
         """YouTube URL 유효성 검사"""
         youtube_patterns = [
@@ -631,9 +860,9 @@ def main():
     app = QApplication(sys.argv)
     
     # 애플리케이션 정보 설정
-    app.setApplicationName("YouTube Video Info & Thumbnail Downloader")
-    app.setApplicationVersion("2.0")
-    app.setOrganizationName("YT Video Info Tool")
+    app.setApplicationName("YouTube Video Info & Download Tool")
+    app.setApplicationVersion("2.1")
+    app.setOrganizationName("YT Video Tool")
     
     # 메인 윈도우 생성 및 실행
     window = YouTubeThumbnailGUI()
