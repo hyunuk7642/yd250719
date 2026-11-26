@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- artifact:head-start -->
+<title>떠다니는 서재</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="책이 떠다니는 서재. 책을 눌러 펼치고 한 장씩 넘겨 읽습니다.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="css/library.css">
+<!-- artifact:head-end -->
+</head>
+<body>
+<!-- artifact:body-start -->
+
+<!-- ───────────── 서재 ───────────── -->
+<main id="library" class="library" aria-labelledby="lib-title">
+  <div class="sky" aria-hidden="true"></div>
+  <div class="shaft" aria-hidden="true"></div>
+  <canvas id="motes" class="motes" aria-hidden="true"></canvas>
+  <div class="floor" aria-hidden="true"></div>
+
+  <div class="viewport">
+    <div class="world" id="world"></div>
+  </div>
+
+  <header class="lib-head">
+    <p class="lib-eyebrow">MY LIBRARY</p>
+    <h1 id="lib-title" class="lib-title">떠다니는 서재</h1>
+    <p class="lib-count" id="lib-count"></p>
+  </header>
+
+  <p class="lib-hint" id="lib-hint">책을 눌러 펼쳐 보세요</p>
+
+  <div class="hover-card" id="hover-card" aria-hidden="true">
+    <p class="hc-kicker" id="hc-kicker"></p>
+    <p class="hc-title" id="hc-title"></p>
+    <p class="hc-sub" id="hc-sub"></p>
+    <p class="hc-mark" id="hc-mark"></p>
+  </div>
+</main>
+
+<!-- 서재에서 책상으로 날아오는 책 -->
+<div class="flyer-stage" id="flyer-stage" aria-hidden="true"></div>
+
+<!-- ───────────── 읽기 화면 ───────────── -->
+<section id="reader" class="reader" hidden aria-label="책 읽기">
+  <header class="reader-bar">
+    <button type="button" class="r-btn r-back" id="btn-back" aria-label="서재로 돌아가기">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      <span>서재</span>
+    </button>
+    <div class="r-title">
+      <p class="r-name" id="r-name"></p>
+      <p class="r-sub" id="r-sub"></p>
+    </div>
+    <div class="r-tools">
+      <button type="button" class="r-btn" id="btn-toc" aria-label="목차" aria-expanded="false" aria-controls="toc">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+        <span class="r-label">목차</span>
+      </button>
+      <button type="button" class="r-btn" id="btn-zoom" aria-label="쪽 크게 보기">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M11 8v6M8 11h6"/></svg>
+        <span class="r-label">크게</span>
+      </button>
+      <button type="button" class="r-btn" id="btn-sound" aria-label="책장 소리 끄기" aria-pressed="true">
+        <svg class="ico-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>
+        <svg class="ico-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10H4z"/><path d="M17 9.5l5 5M22 9.5l-5 5"/></svg>
+      </button>
+      <button type="button" class="r-btn" id="btn-full" aria-label="전체 화면">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="stage" id="stage">
+    <div class="book-shift" id="book-shift">
+      <div class="flipbook" id="flipbook"></div>
+      <div class="stack stack-l" id="stack-l"></div>
+      <div class="stack stack-r" id="stack-r"></div>
+    </div>
+  </div>
+
+  <footer class="reader-foot">
+    <button type="button" class="r-btn r-nav" id="btn-prev" aria-label="이전 쪽">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <div class="scrub">
+      <div class="scrub-preview" id="scrub-preview" aria-hidden="true">
+        <div class="sp-imgs" id="sp-imgs"></div>
+        <p class="sp-label" id="sp-label"></p>
+      </div>
+      <input type="range" id="scrubber" class="scrubber" min="0" max="1" step="1" value="0" aria-label="쪽 이동">
+      <p class="page-ind" id="page-ind" aria-live="polite"></p>
+    </div>
+    <button type="button" class="r-btn r-nav" id="btn-next" aria-label="다음 쪽">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+    </button>
+  </footer>
+
+  <div class="resume" id="resume" hidden>
+    <span id="resume-text"></span>
+    <button type="button" id="btn-resume">이어 읽기</button>
+    <button type="button" id="btn-resume-x" aria-label="닫기">✕</button>
+  </div>
+
+  <aside id="toc" class="toc" aria-label="목차" hidden>
+    <div class="toc-head">
+      <p class="toc-title">목차</p>
+      <button type="button" class="r-btn" id="btn-toc-x" aria-label="목차 닫기">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <ol class="toc-list" id="toc-list"></ol>
+    <p class="toc-grid-title">모든 쪽</p>
+    <div class="toc-grid" id="toc-grid"></div>
+  </aside>
+
+  <div class="zoom" id="zoom" hidden role="dialog" aria-modal="true" aria-label="쪽 크게 보기">
+    <div class="zoom-scroll" id="zoom-scroll">
+      <img id="zoom-img" class="zoom-img" alt="">
+    </div>
+    <div class="zoom-bar">
+      <button type="button" class="r-btn" id="zoom-prev" aria-label="이전 쪽"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <p class="zoom-label" id="zoom-label"></p>
+      <button type="button" class="r-btn" id="zoom-next" aria-label="다음 쪽"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></button>
+      <button type="button" class="r-btn" id="zoom-fit" aria-label="원본 크기로 보기"><span id="zoom-fit-label">원본 크기</span></button>
+      <button type="button" class="r-btn" id="zoom-x" aria-label="크게 보기 닫기"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+  </div>
+</section>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="vendor/page-flip.browser.js"></script>
+<script src="js/books.js"></script>
+<script src="js/sound.js"></script>
+<script src="js/scene.js"></script>
+<script src="js/reader.js"></script>
+<script src="js/app.js"></script>
+<!-- artifact:body-end -->
+</body>
+</html>
